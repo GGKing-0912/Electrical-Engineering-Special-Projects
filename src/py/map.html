@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>互動地圖</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+  <div id="map" style="width: 100%; height: 100vh;"></div>
+
+  <script>
+    // 初始化地圖
+    var map = L.map('map').setView([25.01335, 121.54057], 18);
+
+    // 加入圖層（OpenStreetMap）
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20,
+    }).addTo(map);
+
+    // 存放所有 marker
+    var markers = [];
+
+    // 點擊地圖加入 marker
+    map.on('click', function(e) {
+      var marker = L.marker(e.latlng).addTo(map);
+
+      // 加入 popup 和刪除按鈕
+      var lat = e.latlng.lat.toFixed(6);
+      var lng = e.latlng.lng.toFixed(6);
+      marker.bindPopup(
+        "Lat: " + lat + "<br>Lng: " + lng +
+        "<br><button onclick='deleteMarker(" + markers.length + ")'>刪除</button>"
+      );
+      markers.push(marker);
+    });
+
+    // 刪除指定 marker
+    function deleteMarker(index) {
+      if (markers[index]) {
+        map.removeLayer(markers[index]);
+        markers[index] = null;
+      }
+    }
+  </script>
+</body>
+</html>
