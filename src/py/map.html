@@ -4,48 +4,131 @@
   <meta charset="utf-8" />
   <title>互動地圖</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 </head>
 <body>
   <div id="map" style="width: 100%; height: 100vh;"></div>
 
   <script>
-    // 初始化地圖
     var map = L.map('map').setView([25.01335, 121.54057], 18);
 
-    // 加入圖層（OpenStreetMap）
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 20,
     }).addTo(map);
 
-    // 存放所有 marker
-    var markers = [];
+    var bridge = null;
+    var routeLine = null;
+    var routeMarkers = [];
+    var planningMode = false;
 
-    // 點擊地圖加入 marker
-    map.on('click', function(e) {
-      var marker = L.marker(e.latlng).addTo(map);
-
-      // 加入 popup 和刪除按鈕
-      var lat = e.latlng.lat.toFixed(6);
-      var lng = e.latlng.lng.toFixed(6);
-      marker.bindPopup(
-        "Lat: " + lat + "<br>Lng: " + lng +
-        "<br><button onclick='deleteMarker(" + markers.length + ")'>刪除</button>"
-      );
-      markers.push(marker);
+    // 初始化 WebChannel
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+        bridge = channel.objects.bridge;
     });
 
-    // 刪除指定 marker
-    function deleteMarker(index) {
-      if (markers[index]) {
-        map.removeLayer(markers[index]);
-        markers[index] = null;
-      }
+    // 畫出預設路線
+    function drawInitialRoute(route) {
+        clearRoute();
+        route.forEach((pt, i) => addRouteNode(pt[0], pt[1], false));
+        redrawRoute();
     }
+
+    function clearRoute() {
+        if (routeLine) map.removeLayer(routeLine);
+        routeMarkers.forEach(m => { if(m) map.removeLayer(m); });
+        routeMarkers = [];
+    }
+
+    function createNumberIcon(number) {
+        return L.divIcon({
+            className: 'number-marker',
+            iconSize: [25, 25],
+            iconAnchor: [12, 12],
+            html: `<div style="
+                background-color: black;
+                color: white;
+                width: 25px;
+                height: 25px;
+                text-align: center;
+                line-height: 25px;
+                border-radius: 50%;
+                font-weight: bold;
+            ">${number}</div>`
+        });
+    }
+
+    function addRouteNode(lat, lng, notify=true) {
+        var marker = L.marker([lat, lng], {draggable: planningMode}).addTo(map);
+        marker.index = routeMarkers.length;
+
+        marker.on('dragend', function() { updateRouteFromMarkers(); });
+
+        marker.on('click', function() {
+            if (planningMode) {
+                map.removeLayer(marker);
+                routeMarkers[marker.index] = null;
+                updateRouteFromMarkers();
+                if (bridge) bridge.deleteNode(marker.index);
+            }
+        });
+
+        routeMarkers.push(marker);
+        redrawRoute();  // <- 重新生成數字圖標
+
+        if (notify && bridge) bridge.receiveCoords(lat, lng);
+    }
+
+
+    function redrawRoute() {
+        var latlngs = routeMarkers.filter(m=>m).map(m => m.getLatLng());
+        if (routeLine) map.removeLayer(routeLine);
+        if (latlngs.length > 1) {
+            routeLine = L.polyline(latlngs, {color:'blue'}).addTo(map);
+        }
+
+        // 重新編號
+        var count = 1;
+        routeMarkers.forEach((m) => {
+            if (m) {
+                m.setIcon(createNumberIcon(count));
+                count++;
+            }
+        });
+    }
+
+
+    function updateRouteFromMarkers() {
+        var newRoute = routeMarkers.filter(m=>m).map(m => [m.getLatLng().lat, m.getLatLng().lng]);
+        redrawRoute();
+        // 僅在非規劃模式下才通知 Python 更新路線
+        if (bridge && !planningMode) {
+            bridge.updateRoute(newRoute);
+        }
+    }
+
+    // 點擊新增節點 (僅在規劃模式)
+    map.on('click', function(e) {
+        if (planningMode) addRouteNode(e.latlng.lat, e.latlng.lng);
+    });
+
+    // 啟用/關閉規劃模式
+    function enableRoutePlanning() {
+        planningMode = true;
+        routeMarkers.forEach(m => { if (m) m.dragging.enable(); });
+    }
+    function disableRoutePlanning() {
+        planningMode = false;
+        routeMarkers.forEach(m => { if (m) m.dragging.disable(); });
+    }
+
+    // 讓 Python 可以呼叫
+    window.drawInitialRoute = drawInitialRoute;
+    window.clearRoute = clearRoute;
+    window.enableRoutePlanning = enableRoutePlanning;
+    window.disableRoutePlanning = disableRoutePlanning;
+
   </script>
 </body>
 </html>
