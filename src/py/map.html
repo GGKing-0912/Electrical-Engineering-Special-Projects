@@ -23,15 +23,13 @@
     var routeMarkers = [];
     var planningMode = false;
 
-    // 初始化 WebChannel
     new QWebChannel(qt.webChannelTransport, function(channel) {
         bridge = channel.objects.bridge;
     });
 
-    // 畫出預設路線
     function drawInitialRoute(route) {
         clearRoute();
-        route.forEach((pt, i) => addRouteNode(pt[0], pt[1], false));
+        route.forEach(pt => addRouteNode(pt[0], pt[1], false));
         redrawRoute();
     }
 
@@ -61,74 +59,67 @@
 
     function addRouteNode(lat, lng, notify=true) {
         var marker = L.marker([lat, lng], {draggable: planningMode}).addTo(map);
-        marker.index = routeMarkers.length;
 
-        marker.on('dragend', function() { updateRouteFromMarkers(); });
+        // 拖動節點時呼叫 Python 的 nodeMoved 函數
+        marker.on('dragend', function() { 
+            redrawRoute();
+            if (bridge && bridge.nodeMoved) {
+                var index = routeMarkers.indexOf(marker);
+                bridge.nodeMoved(index, marker.getLatLng().lat, marker.getLatLng().lng);
+            }
+        });
 
         marker.on('click', function() {
             if (planningMode) {
+                var index = routeMarkers.indexOf(marker);
                 map.removeLayer(marker);
-                routeMarkers[marker.index] = null;
-                updateRouteFromMarkers();
-                if (bridge) bridge.deleteNode(marker.index);
+                routeMarkers.splice(index, 1);
+                redrawRoute();
+                if (bridge) bridge.deleteNode(index); // 刪除時呼叫 Python
             }
         });
 
         routeMarkers.push(marker);
-        redrawRoute();  // <- 重新生成數字圖標
+        redrawRoute();
 
-        if (notify && bridge) bridge.receiveCoords(lat, lng);
+        if (notify && bridge) bridge.receiveCoords(lat, lng); // 新增節點時呼叫 Python
     }
 
-
     function redrawRoute() {
-        var latlngs = routeMarkers.filter(m=>m).map(m => m.getLatLng());
+        var latlngs = routeMarkers.map(m => m.getLatLng());
         if (routeLine) map.removeLayer(routeLine);
         if (latlngs.length > 1) {
             routeLine = L.polyline(latlngs, {color:'blue'}).addTo(map);
         }
 
-        // 重新編號
-        var count = 1;
-        routeMarkers.forEach((m) => {
-            if (m) {
-                m.setIcon(createNumberIcon(count));
-                count++;
-            }
+        routeMarkers.forEach((m, idx) => {
+            m.setIcon(createNumberIcon(idx+1));
         });
     }
 
-
-    function updateRouteFromMarkers() {
-        var newRoute = routeMarkers.filter(m=>m).map(m => [m.getLatLng().lat, m.getLatLng().lng]);
-        redrawRoute();
-        // 僅在非規劃模式下才通知 Python 更新路線
-        if (bridge && !planningMode) {
-            bridge.updateRoute(newRoute);
-        }
-    }
-
-    // 點擊新增節點 (僅在規劃模式)
     map.on('click', function(e) {
         if (planningMode) addRouteNode(e.latlng.lat, e.latlng.lng);
     });
 
-    // 啟用/關閉規劃模式
     function enableRoutePlanning() {
         planningMode = true;
-        routeMarkers.forEach(m => { if (m) m.dragging.enable(); });
-    }
-    function disableRoutePlanning() {
-        planningMode = false;
-        routeMarkers.forEach(m => { if (m) m.dragging.disable(); });
+        routeMarkers.forEach(m => m.dragging.enable());
     }
 
-    // 讓 Python 可以呼叫
+    function disableRoutePlanning() {
+        planningMode = false;
+        routeMarkers.forEach(m => m.dragging.disable());
+
+        if (bridge) {
+            var coords = routeMarkers.map(m => [m.getLatLng().lat, m.getLatLng().lng]);
+            bridge.updateRoute(coords); // 退出規劃模式一次性更新完整路線
+        }
+    }
+
     window.drawInitialRoute = drawInitialRoute;
     window.clearRoute = clearRoute;
     window.enableRoutePlanning = enableRoutePlanning;
     window.disableRoutePlanning = disableRoutePlanning;
-
   </script>
 </body>
 </html>

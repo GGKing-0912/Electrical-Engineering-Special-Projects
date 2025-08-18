@@ -2,42 +2,26 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QWidget, QVB
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QUrl, pyqtSlot, QObject
 from PyQt5.QtWebChannel import QWebChannel
-import sys, os, json
+import sys, os, json, copy
 
 # ---------------------- 與 JS 溝通的橋樑 ----------------------
 class Bridge(QObject):
-    def __init__(self):
+    def __init__(self, routes_file="code/routes.json"):
         super().__init__()
-        self.routes = {
-            "路線 A": [
-                [25.012190, 121.541713],
-                [25.012927, 121.540954],
-                [25.013330, 121.541423],
-                [25.012674, 121.542094],
-                [25.012268, 121.541638]
-            ],
-            "路線 B": [
-                [25.012190, 121.541713],
-                [25.012259, 121.541646],
-                [25.012664, 121.542099],
-                [25.013355, 121.542834],
-                [25.013984, 121.542191],
-                [25.013318, 121.541429],
-                [25.013556, 121.541174],
-                [25.013151, 121.540710],
-                [25.012920, 121.540954]
-            ],
-            "路線 C": [
-                [25.012190, 121.541713],
-                [25.012927, 121.540954],
-                [25.013326, 121.541423],
-                [25.013979, 121.542188],
-                [25.013350, 121.542837],
-                [25.012672, 121.542091],
-                [25.012266, 121.541646]
-            ]
-        }
-        self.current_route = []
+        self.routes = self.load_routes(routes_file)["routes"]["default_route"]
+        self.current_route = self.load_routes(routes_file)["routes"]["current_route"]
+
+    def load_routes(self, filename):
+        if os.path.exists(filename):
+            with open(filename, "r", encoding="utf-8") as f:
+                try:
+                    return json.load(f)
+                except json.JSONDecodeError:
+                    print("JSON 格式錯誤，載入失敗")
+                    return {}
+        else:
+            print(f"找不到 {filename}，使用空路線")
+            return {}
 
     @pyqtSlot(float, float)
     def receiveCoords(self, lat, lng):
@@ -50,12 +34,25 @@ class Bridge(QObject):
             lat, lng = self.current_route[index]
             print(f"刪除節點: [{lat:.6f}, {lng:.6f}]")
             self.current_route.pop(index)
+            
+        # 同步到地圖
+        js_code = f"drawInitialRoute({json.dumps(self.current_route)});"
+        self.parent_window.webview.page().runJavaScript(js_code)
+
+    @pyqtSlot(int, float, float)
+    def nodeMoved(self, index, lat, lng):
+        if 0 <= index < len(self.current_route):
+            self.current_route[index] = [round(lat, 6), round(lng, 6)]
+            print(f"節點 {index + 1} 移動到座標: [{lat:.6f}, {lng:.6f}]")
 
     @pyqtSlot("QVariantList")
     def updateRoute(self, new_route):
-        formatted_route = [[round(lat,6), round(lng,6)] for lat, lng in new_route]
+        formatted_route = [[round(lat, 6), round(lng, 6)] for lat, lng in new_route]
         self.current_route = formatted_route
-        print(f"更新後路線: {formatted_route}")
+        print(f"更新後路線: ")
+        for point in self.current_route:
+            lat, lng = point
+            print(f"[{lat:.6f}, {lng:.6f}]")
 
 # ---------------------- 自訂 Logger ----------------------
 class Logger:
@@ -91,6 +88,7 @@ class MainWindow(QMainWindow):
 
         self.channel = QWebChannel()
         self.bridge = Bridge()
+        self.bridge.parent_window = self
         self.channel.registerObject("bridge", self.bridge)
         self.webview.page().setWebChannel(self.channel)
 
@@ -128,10 +126,20 @@ class MainWindow(QMainWindow):
         self.log_widget.setReadOnly(True)
         self.log_widget.setFixedHeight(200)  # 固定高度
         right_layout.addWidget(self.log_widget)  # 放在按鈕區下方
+        
+        # 監聽網頁載入完成事件
+        self.webview.loadFinished.connect(self.on_page_load_finished)
 
         # 將 print 重定向到 log_widget
         sys.stdout = Logger(self.log_widget)
         sys.stderr = Logger(self.log_widget)
+
+    def on_page_load_finished(self):
+        # 如果 current_route 不空，就畫出來
+        if self.bridge.current_route:
+            js_code = f"drawInitialRoute({json.dumps(self.bridge.current_route)});"
+            self.webview.page().runJavaScript(js_code)
+            print("---已載入當前路線到地圖---")
 
     # ---------------------- 路線規劃 ----------------------
     def toggle_route_planning(self):
@@ -156,23 +164,19 @@ class MainWindow(QMainWindow):
             self.btn_info.setEnabled(True)
             self.btn_history.setEnabled(True)
 
-            # 退出規劃模式時輸出更新後路線
-            if self.bridge.current_route:
-                print(f"更新後路線: ")
-                for point in self.bridge.current_route:
-                    lat, lng = point
-                    print(f"[{lat:.6f}, {lng:.6f}]")
+            # 將路線存成json
+            self.save_routes_to_json()
 
     def show_route_buttons(self):
         for i, (name, route) in enumerate(self.bridge.routes.items()):
             btn = QPushButton(name)
-            btn.setFixedWidth(280)  # 設定小一點的寬度
+            btn.setFixedWidth(int(self.btn_route.width() * 0.9))
             btn.clicked.connect(lambda checked, r=route: self.load_route(r))
 
             # 使用水平 layout 讓按鈕靠右
             h_layout = QHBoxLayout()
-            h_layout.addStretch()       # 左側空間自動撐開
-            h_layout.addWidget(btn)     # 按鈕靠右
+            h_layout.addStretch()
+            h_layout.addWidget(btn)
             self.button_layout.insertLayout(i + 1, h_layout)
 
             self.route_buttons.append(btn)
@@ -188,8 +192,20 @@ class MainWindow(QMainWindow):
         for point in route:
             lat, lng = point
             print(f"[{lat:.6f}, {lng:.6f}]")
-        self.bridge.current_route = route
+        self.bridge.current_route = copy.deepcopy(route)
         self.webview.page().runJavaScript(f"drawInitialRoute({json.dumps(route)});")
+
+    def save_routes_to_json(self, filename="code/routes.json"):
+        data = {
+            "routes":
+                {
+                    "default_route": self.bridge.routes,
+                    "current_route": self.bridge.current_route
+                }
+        }
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        print(f"---路線已儲存於 {filename}---")
 
     def self_driving_information(self):
         print("自駕車資訊")
